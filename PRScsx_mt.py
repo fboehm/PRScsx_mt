@@ -28,7 +28,10 @@ Multi-trait format:
   --n_gwas:   n_trait1_pop1,n_trait1_pop2;n_trait2_pop1,n_trait2_pop2
   --rho_pheno: phenotypic correlation between traits (single float for T=2)
   --n_overlap: overlap sample size per population (comma-separated)
-  --lambda_psi: hyperparameter for trait-specific modulators (default 1.0)
+  --lambda_psi: hyperparameter for trait-specific modulators (default 1.0; cross_trait=mult only)
+  --cross_trait: cross-trait sharing scheme — mult (default, multiplicative psi_trait),
+                 mvcs (per-ancestry multivariate continuous shrinkage, signed cross-trait R),
+                 kron (separable Kronecker R_trait (x) R_anc, signed across traits & ancestries)
 
 Single-trait format (backward compatible with PRS-CSx):
   --sst_file: pop1_sst,pop2_sst
@@ -94,12 +97,12 @@ def build_rho_e(rho_pheno, n_overlap, n_gwas_per_pop, n_pop, n_trait):
 def parse_param():
     long_opts_list = ['ref_dir=', 'bim_prefix=', 'sst_file=', 'a=', 'b=', 'phi=', 'n_gwas=', 'pop=',
                       'n_iter=', 'n_burnin=', 'thin=', 'out_dir=', 'out_name=', 'chrom=', 'meta=', 'write_pst=', 'seed=',
-                      'rho_pheno=', 'n_overlap=', 'lambda_psi=', 'n_jobs=', 'help']
+                      'rho_pheno=', 'n_overlap=', 'lambda_psi=', 'cross_trait=', 'n_jobs=', 'help']
 
     param_dict = {'ref_dir': None, 'bim_prefix': None, 'sst_file': None, 'a': 1, 'b': 0.5, 'phi': None, 'n_gwas': None, 'pop': None,
                   'n_iter': None, 'n_burnin': None, 'thin': 5, 'out_dir': None, 'out_name': None, 'chrom': range(1,23),
                   'meta': 'FALSE', 'write_pst': 'FALSE', 'seed': None,
-                  'rho_pheno': None, 'n_overlap': None, 'lambda_psi': 1.0, 'n_jobs': 1}
+                  'rho_pheno': None, 'n_overlap': None, 'lambda_psi': 1.0, 'cross_trait': 'mult', 'n_jobs': 1}
 
     print('\n')
 
@@ -135,6 +138,7 @@ def parse_param():
             elif opt == "--rho_pheno": param_dict['rho_pheno'] = float(arg)
             elif opt == "--n_overlap": param_dict['n_overlap'] = list(map(int, arg.split(',')))
             elif opt == "--lambda_psi": param_dict['lambda_psi'] = float(arg)
+            elif opt == "--cross_trait": param_dict['cross_trait'] = arg.lower()
             elif opt == "--n_jobs": param_dict['n_jobs'] = int(arg)
     else:
         print(__doc__)
@@ -205,6 +209,10 @@ def parse_param():
             len(param_dict['sst_file']) != n_pop):
             print('* Length of sst_file, n_gwas and pop does not match\n')
             sys.exit(2)
+
+    if param_dict['cross_trait'] not in ('mult', 'mvcs', 'kron'):
+        print('* --cross_trait must be one of: mult, mvcs, kron\n')
+        sys.exit(2)
 
     n_pop = len(param_dict['pop'])
     if param_dict['n_iter'] == None or param_dict['n_burnin'] == None:
@@ -290,7 +298,7 @@ def process_chrom(args):
             n_gwas_mt, ld_blk, blk_size,
             param_dict['n_iter'], param_dict['n_burnin'], param_dict['thin'], param_dict['pop'], chrom,
             param_dict['out_dir'], param_dict['out_name'], param_dict['meta'], param_dict['write_pst'], seed,
-            n_trait=n_trait, rho_e=rho_e, lambda_psi=param_dict['lambda_psi'])
+            n_trait=n_trait, rho_e=rho_e, lambda_psi=param_dict['lambda_psi'], cross_trait=param_dict['cross_trait'])
 
     print('\n')
 
