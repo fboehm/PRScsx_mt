@@ -251,10 +251,17 @@ def process_chrom(args):
 
     vld_dict = parse_genet.parse_bim(param_dict['bim_prefix'], chrom)
 
-    # Per-chromosome seed: offset by chrom so parallel runs are independent
+    # Per-chromosome seed so parallel workers never share an RNG stream.
+    # multiprocessing.Pool forks workers, which inherit the parent's global numpy
+    # RNG state; a worker that does not re-seed draws the same sequence as its
+    # siblings. Seed every worker: reproducibly from the base seed (offset by
+    # chrom) when one was given, else from fresh OS entropy so each worker is
+    # still independent (just not reproducible, since no seed was requested).
     seed = param_dict['seed']
     if seed is not None:
         seed = seed + chrom
+    else:
+        seed = int(np.random.SeedSequence().generate_state(1)[0])
 
     if n_trait == 1:
         sst_dict = {}
