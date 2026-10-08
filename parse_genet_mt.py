@@ -160,6 +160,28 @@ def parse_sumstats(ref_dict, vld_dict, sst_file, pop, n_subj):
     return sst_dict
 
 
+def restrict_to_common_snps(sst_dict, pop, n_trait):
+    """
+    Keep, within each population, only the SNPs present for every trait.
+
+    The sampler shares one SNP set per population across traits (LD blocks,
+    idx_dict), so each (pp, tt) must hold the same SNPs in the same order.
+    Real GWAS for different traits match slightly different SNP sets.
+    sst_dict is keyed by (pp, tt) and modified in place.
+    """
+    for pp in range(len(pop)):
+        common = set(sst_dict[(pp, 0)]['SNP'])
+        for tt in range(1, n_trait):
+            common &= set(sst_dict[(pp, tt)]['SNP'])
+        for tt in range(n_trait):
+            sst = sst_dict[(pp, tt)]
+            keep = [ii for (ii, snp) in enumerate(sst['SNP']) if snp in common]
+            if len(keep) < len(sst['SNP']):
+                for key in sst:
+                    sst[key] = [sst[key][ii] for ii in keep]
+        print('... %d SNPs shared by all %d traits in %s ...' % (len(common), n_trait, pop[pp].upper()))
+
+
 def parse_ldblk(ldblk_dir, sst_dict, pop, chrom, ref):
     print('... parse %s reference LD on chromosome %d ...' % (pop.upper(), chrom))
 
