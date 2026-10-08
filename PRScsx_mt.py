@@ -291,6 +291,9 @@ def process_chrom(args):
                     ref_dict, vld_dict, sst_file_mt[(pp, tt)],
                     param_dict['pop'][pp], n_gwas_mt[(pp, tt)])
 
+        # LD blocks and idx_dict are per population, so all traits must share SNPs.
+        parse_genet.restrict_to_common_snps(sst_dict, param_dict['pop'], n_trait)
+
         ld_blk = {}
         blk_size = {}
         for pp in range(n_pop):
