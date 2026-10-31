@@ -15,8 +15,50 @@ When n_trait=1, this reduces exactly to the original PRS-CSx MCMC sampler.
 import numpy as np
 from scipy import linalg
 from scipy.stats import invwishart
+from scipy.special import gammainc, gammaln
 from numpy import random
 import gigrnd
+
+
+# Support for log(lambda_t) in the learned-rate update; keeps gammainc() away from underflow.
+_LOGLAM_MIN, _LOGLAM_MAX = np.log(1e-6), np.log(1e6)
+
+
+def _log_post_loglam(eta, alpha, M, S, c, d):
+    """
+    Log full conditional of eta = log(lambda_t), up to a constant, including the Jacobian.
+
+    psi_trait[j,t] ~ Gamma(alpha, lambda_t) truncated to (0,1], whose density is
+    lambda^alpha x^(alpha-1) exp(-lambda x) / lower_gamma(alpha, lambda); lambda_t ~ Gamma(c, d).
+    Depends on the psi_trait draws only through M (count) and S (sum).
+    """
+    if not (_LOGLAM_MIN < eta < _LOGLAM_MAX):
+        return -np.inf
+    lam = np.exp(eta)
+    log_lower_gamma = np.log(gammainc(alpha, lam)) + gammaln(alpha)
+    return (c + M*alpha)*eta - lam*(d + S) - M*log_lower_gamma
+
+
+def _slice_1d(x0, logf, w=1.0, max_steps=50):
+    """Univariate slice sampler with stepping out and shrinkage (Neal 2003)."""
+    y = logf(x0) + np.log(random.rand())
+    L = x0 - w*random.rand(); R = L + w
+    for _ in range(max_steps):
+        if logf(L) <= y:
+            break
+        L -= w
+    for _ in range(max_steps):
+        if logf(R) <= y:
+            break
+        R += w
+    while True:
+        x1 = L + (R - L)*random.rand()
+        if logf(x1) > y:
+            return x1
+        if x1 < x0:
+            L = x1
+        else:
+            R = x1
 
 
 def _safe_inv(R, jitter=1e-8):
@@ -56,7 +98,8 @@ def _sample_corr(scatter, dof, nu0=None, psi0=None):
 
 def mcmc(a, b, phi, snp_dict, beta_mrg, frq_dict, idx_dict, n, ld_blk, blk_size,
          n_iter, n_burnin, thin, pop, chrom, out_dir, out_name, meta, write_pst, seed,
-         n_trait=1, rho_e=None, lambda_psi=1.0, cross_trait='mult'):
+         n_trait=1, rho_e=None, lambda_psi=1.0, cross_trait='mult',
+         alpha_psi=1.0, c_lam=1.0, d_lam=1.0):
     """
     Multi-trait MCMC sampler.
 
@@ -99,9 +142,18 @@ def mcmc(a, b, phi, snp_dict, beta_mrg, frq_dict, idx_dict, n, ld_blk, blk_size,
     rho_e : dict or None
         Per-population error correlation matrices (n_trait x n_trait).
         Keyed by pp. Only used when n_trait > 1. None means no overlap.
-    lambda_psi : float
-        Hyperparameter for trait-specific shrinkage modulators (default 1.0).
-        Only used by cross_trait='mult'.
+    lambda_psi : float or None
+        Rate of the prior on the trait-specific shrinkage modulators (default 1.0):
+        psi_trait[j,t] ~ Gamma(alpha_psi, lambda_t) truncated to (0,1] (by clamping draws
+        above 1, as PRS-CS does for psi). If None, a separate rate lambda_t is learned for
+        each trait under a Gamma(c_lam, d_lam) hyperprior. Only used by cross_trait='mult'.
+    alpha_psi : float
+        Shape of the psi_trait prior (default 1.0, i.e. Exponential(lambda)). alpha_psi=0
+        reproduces earlier versions of this sampler, whose implied 1/x prior is improper and
+        over-shrinks when per-SNP signal is weak. Only used by cross_trait='mult'.
+    c_lam, d_lam : float
+        Shape and rate of the Gamma hyperprior on lambda_t when lambda_psi is None
+        (default 1.0, 1.0).
     cross_trait : str
         Cross-trait sharing scheme for multi-trait mode:
           'mult' : multiplicative scalar modulators psi * psi_trait (original;
@@ -198,6 +250,8 @@ def mcmc(a, b, phi, snp_dict, beta_mrg, frq_dict, idx_dict, n, ld_blk, blk_size,
     # Trait-specific modulators (only when n_trait > 1 and cross_trait='mult')
     if n_trait > 1 and cross_trait == 'mult':
         psi_trait = np.ones((p_tot, n_trait))
+        lambda_updt = lambda_psi is None
+        lam = np.ones(n_trait) if lambda_updt else np.full(n_trait, float(lambda_psi))
 
     # Correlation matrices for the multivariate-CS / Kronecker priors
     if n_trait > 1 and cross_trait == 'mvcs':
@@ -259,6 +313,7 @@ def mcmc(a, b, phi, snp_dict, beta_mrg, frq_dict, idx_dict, n, ld_blk, blk_size,
     phi_est = 0.0
     if n_trait > 1 and cross_trait == 'mult':
         psi_trait_est = np.zeros((p_tot, n_trait))
+        lam_est = np.zeros(n_trait)
 
     # MCMC
     qq = 0
@@ -418,12 +473,19 @@ def mcmc(a, b, phi, snp_dict, beta_mrg, frq_dict, idx_dict, n, ld_blk, blk_size,
                     for jj in range(p_tot):
                         while True:
                             try:
-                                psi_trait[jj, tt] = gigrnd.gigrnd(-0.5*n_grp[jj], 2.0*lambda_psi, xx_trait[jj,0])
+                                psi_trait[jj, tt] = gigrnd.gigrnd(alpha_psi-0.5*n_grp[jj], 2.0*lam[tt], xx_trait[jj,0])
                             except:
                                 continue
                             else:
                                 break
                 psi_trait[psi_trait>1] = 1.0
+
+                # Step 5b: per-trait rate lambda_t of the psi_trait prior (only if learned)
+                if lambda_updt:
+                    for tt in range(n_trait):
+                        S_t = psi_trait[:, tt].sum()
+                        logf = lambda e, S_t=S_t: _log_post_loglam(e, alpha_psi, p_tot, S_t, c_lam, d_lam)
+                        lam[tt] = np.exp(_slice_1d(np.log(lam[tt]), logf))
 
                 # Step 6: Phi (global) sampling
                 if phi_updt == True:
@@ -645,6 +707,7 @@ def mcmc(a, b, phi, snp_dict, beta_mrg, frq_dict, idx_dict, n, ld_blk, blk_size,
                 phi_est = phi_est + phi/n_pst
                 if cross_trait == 'mult':
                     psi_trait_est = psi_trait_est + psi_trait/n_pst
+                    lam_est = lam_est + lam/n_pst
                 elif cross_trait == 'mvcs':
                     for pp in range(n_pop):
                         R_cross_est[pp] = R_cross_est[pp] + R_cross[pp]/n_pst
@@ -779,6 +842,11 @@ def mcmc(a, b, phi, snp_dict, beta_mrg, frq_dict, idx_dict, n, ld_blk, blk_size,
     # print estimated phi
     if phi_updt == True:
         print('... Estimated global shrinkage parameter: %1.2e ...' % np.float64(phi_est).item())
+
+    # print learned psi_trait prior rates
+    if n_trait > 1 and cross_trait == 'mult' and lambda_updt:
+        print('... Estimated psi_trait prior rates lambda_t: %s ...'
+              % ', '.join('%1.2e' % v for v in lam_est))
 
     # write learned cross-condition correlation matrices
     if n_trait > 1 and cross_trait == 'mvcs':
