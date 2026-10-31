@@ -61,6 +61,79 @@ def _slice_1d(x0, logf, w=1.0, max_steps=50):
             R = x1
 
 
+def _gig_trunc1_update(x0, p, psi, chi, tol=1e-10, max_iter=200):
+    """
+    One exact slice-sampling update of each element of x0 (all in (0,1]), targeting
+    GIG(p, psi, chi) restricted to (0,1]: density ∝ x^(p-1) exp(-(psi*x + chi/x)/2).
+
+    Works on y = log(x), where the target g(y) = p*y - (psi*e^y + chi*e^-y)/2 is strictly
+    concave, so every slice {y <= 0 : g(y) > level} is an interval. Its endpoints are
+    bracketed by vectorized bisection, and the new point is drawn uniformly on the bracket
+    with the usual shrinkage step, which keeps the update exact. p may vary by element
+    (via n_grp); psi > 0 and chi >= 0 are as in the untruncated GIG update.
+    """
+    p = np.broadcast_to(np.asarray(p, dtype=float), x0.shape)
+    chi = np.asarray(chi, dtype=float)
+
+    def g(y):
+        with np.errstate(over='ignore', invalid='ignore'):
+            v = p*y - 0.5*(psi*np.exp(y) + chi*np.exp(-y))
+        return np.where(np.isnan(v), -np.inf, v)
+
+    y0 = np.log(x0)
+    level = g(y0) - random.exponential(size=x0.shape)     # y0 is always inside its slice
+
+    # right end: 0 if the slice reaches the cap, else bisect on (y0, 0)
+    R_out = np.zeros_like(y0)
+    inside = g(R_out) > level
+    lo, hi = y0.copy(), R_out.copy()
+    for _ in range(max_iter):
+        todo = ~inside & (hi - lo > tol)
+        if not todo.any():
+            break
+        mid = 0.5*(lo + hi)
+        up = g(mid) > level
+        lo = np.where(todo & up, mid, lo)
+        hi = np.where(todo & ~up, mid, hi)
+    R_out = np.where(inside, 0.0, hi)
+
+    # left end: step out (doubling) until outside the slice, then bisect
+    step = np.ones_like(y0)
+    L_out = y0 - step
+    for _ in range(max_iter):
+        need = g(L_out) > level
+        if not need.any():
+            break
+        step = np.where(need, 2.0*step, step)
+        L_out = np.where(need, y0 - step, L_out)
+    lo, hi = L_out.copy(), y0.copy()
+    for _ in range(max_iter):
+        todo = hi - lo > tol
+        if not todo.any():
+            break
+        mid = 0.5*(lo + hi)
+        up = g(mid) > level
+        hi = np.where(todo & up, mid, hi)
+        lo = np.where(todo & ~up, mid, lo)
+    L_out = lo
+
+    # uniform draw on [L_out, R_out] with shrinkage (bracket is outside the slice by <= tol)
+    y1 = y0.copy()
+    todo = np.ones(y0.shape, dtype=bool)
+    L, R = L_out, R_out
+    for _ in range(max_iter):
+        if not todo.any():
+            break
+        cand = L + (R - L)*random.rand(*y0.shape)
+        ok = todo & (g(cand) > level)
+        y1 = np.where(ok, cand, y1)
+        shrink = todo & ~ok
+        L = np.where(shrink & (cand < y0), cand, L)
+        R = np.where(shrink & (cand >= y0), cand, R)
+        todo = shrink
+    return np.minimum(np.exp(y1), 1.0)
+
+
 def _safe_inv(R, jitter=1e-8):
     """Invert a (small) symmetric PD matrix, adding jitter if needed."""
     D = R.shape[0]
@@ -99,7 +172,7 @@ def _sample_corr(scatter, dof, nu0=None, psi0=None):
 def mcmc(a, b, phi, snp_dict, beta_mrg, frq_dict, idx_dict, n, ld_blk, blk_size,
          n_iter, n_burnin, thin, pop, chrom, out_dir, out_name, meta, write_pst, seed,
          n_trait=1, rho_e=None, lambda_psi=1.0, cross_trait='mult',
-         alpha_psi=1.0, c_lam=1.0, d_lam=1.0):
+         alpha_psi=1.0, c_lam=1.0, d_lam=1.0, psi_trait_cap='truncate'):
     """
     Multi-trait MCMC sampler.
 
@@ -144,9 +217,9 @@ def mcmc(a, b, phi, snp_dict, beta_mrg, frq_dict, idx_dict, n, ld_blk, blk_size,
         Keyed by pp. Only used when n_trait > 1. None means no overlap.
     lambda_psi : float or None
         Rate of the prior on the trait-specific shrinkage modulators (default 1.0):
-        psi_trait[j,t] ~ Gamma(alpha_psi, lambda_t) truncated to (0,1] (by clamping draws
-        above 1, as PRS-CS does for psi). If None, a separate rate lambda_t is learned for
-        each trait under a Gamma(c_lam, d_lam) hyperprior. Only used by cross_trait='mult'.
+        psi_trait[j,t] ~ Gamma(alpha_psi, lambda_t) truncated to (0,1] (see psi_trait_cap).
+        If None, a separate rate lambda_t is learned for each trait under a
+        Gamma(c_lam, d_lam) hyperprior. Only used by cross_trait='mult'.
     alpha_psi : float
         Shape of the psi_trait prior (default 1.0, i.e. Exponential(lambda)). alpha_psi=0
         reproduces earlier versions of this sampler, whose implied 1/x prior is improper and
@@ -154,6 +227,12 @@ def mcmc(a, b, phi, snp_dict, beta_mrg, frq_dict, idx_dict, n, ld_blk, blk_size,
     c_lam, d_lam : float
         Shape and rate of the Gamma hyperprior on lambda_t when lambda_psi is None
         (default 1.0, 1.0).
+    psi_trait_cap : str
+        How psi_trait is kept in (0,1]. 'truncate' (default) samples its full conditional
+        restricted to (0,1] exactly, matching the truncated prior that the lambda_t update
+        assumes. 'clamp' draws from the untruncated conditional and sets values above 1
+        to 1, as PRS-CS does for psi; this puts a point mass at 1, biases psi_trait upward,
+        and drives a learned lambda_t toward 0. Only used by cross_trait='mult'.
     cross_trait : str
         Cross-trait sharing scheme for multi-trait mode:
           'mult' : multiplicative scalar modulators psi * psi_trait (original;
@@ -470,15 +549,20 @@ def mcmc(a, b, phi, snp_dict, beta_mrg, frq_dict, idx_dict, n, ld_blk, blk_size,
                         psi_inv = 1.0 / psi[idx_dict[pp]]
                         xx_trait[idx_dict[pp]] += n_kt * beta[(pp, tt)]**2 / sigma[(pp, tt)] * psi_inv
 
-                    for jj in range(p_tot):
-                        while True:
-                            try:
-                                psi_trait[jj, tt] = gigrnd.gigrnd(alpha_psi-0.5*n_grp[jj], 2.0*lam[tt], xx_trait[jj,0])
-                            except:
-                                continue
-                            else:
-                                break
-                psi_trait[psi_trait>1] = 1.0
+                    if psi_trait_cap == 'truncate':
+                        psi_trait[:, tt] = _gig_trunc1_update(psi_trait[:, tt], alpha_psi - 0.5*n_grp,
+                                                              2.0*lam[tt], xx_trait[:, 0])
+                    else:
+                        for jj in range(p_tot):
+                            while True:
+                                try:
+                                    psi_trait[jj, tt] = gigrnd.gigrnd(alpha_psi-0.5*n_grp[jj], 2.0*lam[tt], xx_trait[jj,0])
+                                except:
+                                    continue
+                                else:
+                                    break
+                if psi_trait_cap == 'clamp':
+                    psi_trait[psi_trait>1] = 1.0
 
                 # Step 5b: per-trait rate lambda_t of the psi_trait prior (only if learned)
                 if lambda_updt:

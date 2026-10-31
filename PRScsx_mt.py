@@ -21,7 +21,8 @@ python PRScsx_mt.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREF
                      --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR
                      --chrom=CHROM --meta=META_FLAG --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED
                      --rho_pheno=PHENOTYPIC_CORRELATION --n_overlap=OVERLAP_SAMPLE_SIZE
-                     --lambda_psi=TRAIT_MODULATOR_RATE --alpha_psi=TRAIT_MODULATOR_SHAPE]
+                     --lambda_psi=TRAIT_MODULATOR_RATE --alpha_psi=TRAIT_MODULATOR_SHAPE
+                     --psi_trait_cap=TRUNCATE_OR_CLAMP]
 
 Multi-trait format:
   --sst_file: trait1_pop1,trait1_pop2;trait2_pop1,trait2_pop2  (semicolon separates traits)
@@ -32,6 +33,8 @@ Multi-trait format:
                 truncated to (0,1] (default 1.0; 'auto' learns one rate per trait; cross_trait=mult only)
   --alpha_psi:  shape of that prior (default 1.0, i.e. Exponential; 0 reproduces earlier versions,
                 whose implied prior is improper; cross_trait=mult only)
+  --psi_trait_cap: truncate (default; exact sampling on (0,1]) or clamp (set draws above 1 to 1,
+                as earlier versions did; biases a learned lambda_psi toward 0); cross_trait=mult only
   --cross_trait: cross-trait sharing scheme — mult (default, multiplicative psi_trait),
                  mvcs (per-ancestry multivariate continuous shrinkage, signed cross-trait R),
                  kron (separable Kronecker R_trait (x) R_anc, signed across traits & ancestries)
@@ -100,12 +103,12 @@ def build_rho_e(rho_pheno, n_overlap, n_gwas_per_pop, n_pop, n_trait):
 def parse_param():
     long_opts_list = ['ref_dir=', 'bim_prefix=', 'sst_file=', 'a=', 'b=', 'phi=', 'n_gwas=', 'pop=',
                       'n_iter=', 'n_burnin=', 'thin=', 'out_dir=', 'out_name=', 'chrom=', 'meta=', 'write_pst=', 'seed=',
-                      'rho_pheno=', 'n_overlap=', 'lambda_psi=', 'alpha_psi=', 'cross_trait=', 'n_jobs=', 'help']
+                      'rho_pheno=', 'n_overlap=', 'lambda_psi=', 'alpha_psi=', 'psi_trait_cap=', 'cross_trait=', 'n_jobs=', 'help']
 
     param_dict = {'ref_dir': None, 'bim_prefix': None, 'sst_file': None, 'a': 1, 'b': 0.5, 'phi': None, 'n_gwas': None, 'pop': None,
                   'n_iter': None, 'n_burnin': None, 'thin': 5, 'out_dir': None, 'out_name': None, 'chrom': range(1,23),
                   'meta': 'FALSE', 'write_pst': 'FALSE', 'seed': None,
-                  'rho_pheno': None, 'n_overlap': None, 'lambda_psi': 1.0, 'alpha_psi': 1.0, 'cross_trait': 'mult', 'n_jobs': 1}
+                  'rho_pheno': None, 'n_overlap': None, 'lambda_psi': 1.0, 'alpha_psi': 1.0, 'psi_trait_cap': 'truncate', 'cross_trait': 'mult', 'n_jobs': 1}
 
     print('\n')
 
@@ -142,6 +145,7 @@ def parse_param():
             elif opt == "--n_overlap": param_dict['n_overlap'] = list(map(int, arg.split(',')))
             elif opt == "--lambda_psi": param_dict['lambda_psi'] = None if arg.lower() == 'auto' else float(arg)
             elif opt == "--alpha_psi": param_dict['alpha_psi'] = float(arg)
+            elif opt == "--psi_trait_cap": param_dict['psi_trait_cap'] = arg.lower()
             elif opt == "--cross_trait": param_dict['cross_trait'] = arg.lower()
             elif opt == "--n_jobs": param_dict['n_jobs'] = int(arg)
     else:
@@ -216,6 +220,10 @@ def parse_param():
 
     if param_dict['cross_trait'] not in ('mult', 'mvcs', 'kron'):
         print('* --cross_trait must be one of: mult, mvcs, kron\n')
+        sys.exit(2)
+
+    if param_dict['psi_trait_cap'] not in ('truncate', 'clamp'):
+        print('* --psi_trait_cap must be one of: truncate, clamp\n')
         sys.exit(2)
 
     n_pop = len(param_dict['pop'])
@@ -313,7 +321,7 @@ def process_chrom(args):
             param_dict['n_iter'], param_dict['n_burnin'], param_dict['thin'], param_dict['pop'], chrom,
             param_dict['out_dir'], param_dict['out_name'], param_dict['meta'], param_dict['write_pst'], seed,
             n_trait=n_trait, rho_e=rho_e, lambda_psi=param_dict['lambda_psi'], cross_trait=param_dict['cross_trait'],
-            alpha_psi=param_dict['alpha_psi'])
+            alpha_psi=param_dict['alpha_psi'], psi_trait_cap=param_dict['psi_trait_cap'])
 
     print('\n')
 
