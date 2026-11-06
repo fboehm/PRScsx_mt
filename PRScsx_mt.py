@@ -30,7 +30,8 @@ Multi-trait format:
   --rho_pheno: phenotypic correlation between traits (single float for T=2)
   --n_overlap: overlap sample size per population (comma-separated)
   --lambda_psi: rate of the Gamma(alpha_psi, lambda_psi) prior on the trait-specific modulators,
-                truncated to (0,1] (default 1.0; 'auto' learns one rate per trait; cross_trait=mult only)
+                truncated to (0,1] (default 'auto': learn one rate per trait; or a fixed
+                positive number; cross_trait=mult only)
   --alpha_psi:  shape of that prior (default 1.0, i.e. Exponential; 0 reproduces earlier versions,
                 whose implied prior is improper; cross_trait=mult only)
   --psi_trait_cap: truncate (default; exact sampling on (0,1]) or clamp (set draws above 1 to 1,
@@ -108,7 +109,7 @@ def parse_param():
     param_dict = {'ref_dir': None, 'bim_prefix': None, 'sst_file': None, 'a': 1, 'b': 0.5, 'phi': None, 'n_gwas': None, 'pop': None,
                   'n_iter': None, 'n_burnin': None, 'thin': 5, 'out_dir': None, 'out_name': None, 'chrom': range(1,23),
                   'meta': 'FALSE', 'write_pst': 'FALSE', 'seed': None,
-                  'rho_pheno': None, 'n_overlap': None, 'lambda_psi': 1.0, 'alpha_psi': 1.0, 'psi_trait_cap': 'truncate', 'cross_trait': 'mult', 'n_jobs': 1}
+                  'rho_pheno': None, 'n_overlap': None, 'lambda_psi': None, 'alpha_psi': 1.0, 'psi_trait_cap': 'truncate', 'cross_trait': 'mult', 'n_jobs': 1}
 
     print('\n')
 

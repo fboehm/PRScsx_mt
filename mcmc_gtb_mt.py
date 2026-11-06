@@ -171,7 +171,7 @@ def _sample_corr(scatter, dof, nu0=None, psi0=None):
 
 def mcmc(a, b, phi, snp_dict, beta_mrg, frq_dict, idx_dict, n, ld_blk, blk_size,
          n_iter, n_burnin, thin, pop, chrom, out_dir, out_name, meta, write_pst, seed,
-         n_trait=1, rho_e=None, lambda_psi=1.0, cross_trait='mult',
+         n_trait=1, rho_e=None, lambda_psi=None, cross_trait='mult',
          alpha_psi=1.0, c_lam=1.0, d_lam=1.0, psi_trait_cap='truncate'):
     """
     Multi-trait MCMC sampler.
@@ -216,10 +216,11 @@ def mcmc(a, b, phi, snp_dict, beta_mrg, frq_dict, idx_dict, n, ld_blk, blk_size,
         Per-population error correlation matrices (n_trait x n_trait).
         Keyed by pp. Only used when n_trait > 1. None means no overlap.
     lambda_psi : float or None
-        Rate of the prior on the trait-specific shrinkage modulators (default 1.0):
+        Rate of the prior on the trait-specific shrinkage modulators:
         psi_trait[j,t] ~ Gamma(alpha_psi, lambda_t) truncated to (0,1] (see psi_trait_cap).
-        If None, a separate rate lambda_t is learned for each trait under a
-        Gamma(c_lam, d_lam) hyperprior. Only used by cross_trait='mult'.
+        If None (default), a separate rate lambda_t is learned for each trait under a
+        Gamma(c_lam, d_lam) hyperprior; a float fixes lambda_t to that value for all
+        traits. Only used by cross_trait='mult'.
     alpha_psi : float
         Shape of the psi_trait prior (default 1.0, i.e. Exponential(lambda)). alpha_psi=0
         reproduces earlier versions of this sampler, whose implied 1/x prior is improper and
